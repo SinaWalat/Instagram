@@ -1,53 +1,88 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from 'next/server';
 
-/**
- * GET handler to process Meta's hub.verify_token and return the hub.challenge.
- * Used by Meta when configuring/verifying the webhook URL in the Developer Portal.
- */
-export async function GET(request: NextRequest) {
+export const dynamic = 'force-dynamic';
+
+// 1. Verification Endpoint (DO NOT CHANGE)
+export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
-  const mode = searchParams.get("hub.mode");
-  const token = searchParams.get("hub.verify_token");
-  const challenge = searchParams.get("hub.challenge");
+  const mode = searchParams.get('hub.mode');
+  const token = searchParams.get('hub.verify_token');
+  const challenge = searchParams.get('hub.challenge');
 
-  const verifyToken = process.env.META_VERIFY_TOKEN;
+  const VERIFY_TOKEN = process.env.META_VERIFY_TOKEN;
 
-  if (mode === "subscribe" && token === verifyToken) {
-    console.log("Webhook verified successfully!");
-    // Respond with the challenge token as a plain-text response (required by Meta)
-    return new NextResponse(challenge, {
+  if (mode === 'subscribe' && token === VERIFY_TOKEN) {
+    return new Response(challenge, {
       status: 200,
-      headers: { "Content-Type": "text/plain" },
+      headers: { 'Content-Type': 'text/plain' },
     });
   }
 
-  console.error("Webhook verification failed. Token mismatch or invalid mode.");
-  return new NextResponse("Forbidden", { status: 403 });
+  return new NextResponse('Forbidden', { status: 403 });
 }
 
-/**
- * POST handler to receive incoming Instagram messaging events and return a 200 OK status immediately.
- * A quick response is required by Meta to prevent delivery retries and webhook temporary suspension.
- */
-export async function POST(request: NextRequest) {
+// 2. Event Receiver (Updated for Comments)
+export async function POST(request: Request) {
   try {
     const body = await request.json();
 
-    // Log the payload for visibility in serverless function logs
-    console.log("Received Instagram Webhook payload:", JSON.stringify(body, null, 2));
+    if (body.object === 'instagram') {
+      for (const entry of body.entry) {
+        // Meta stores comments inside the "changes" array
+        for (const change of entry.changes || []) {
+          if (change.field === 'comments') {
+            const commentData = change.value;
+            const commentId = commentData.id;
+            const commentText = commentData.text;
 
-    // Handle payload structure validation (optional, but good practice for debug logs)
-    if (body.object === "instagram") {
-      // Event parsed successfully
-      // Add custom processing logic here (e.g. queuing a job, sending messages)
+            console.log(`New comment received: "${commentText}"`);
+
+            // Your custom list of replies
+            const replies = [
+              "Thank you <3",
+              "Thanks <3",
+              "Appreciate youuuu <3",
+              "7ayatmm <3"
+            ];
+
+            // SAFETY CHECK: If the comment is already one of our automated replies, 
+            // ignore it so the bot doesn't reply to itself in an infinite loop!
+            if (replies.includes(commentText)) {
+              console.log("Ignored bot's own reply.");
+              continue; // Skip to the next event
+            }
+
+            // Pick a random reply from your list
+            const randomReply = replies[Math.floor(Math.random() * replies.length)];
+
+            // Send the reply back to Instagram
+            await sendCommentReply(commentId, randomReply);
+          }
+        }
+      }
+      return new Response('EVENT_RECEIVED', { status: 200 });
     }
-
-    return NextResponse.json({ status: "EVENT_RECEIVED" }, { status: 200 });
+    return new Response('Not Found', { status: 404 });
   } catch (error) {
-    console.error("Error processing webhook POST request:", error);
-    return NextResponse.json(
-      { error: "Invalid webhook payload or structure" },
-      { status: 400 }
-    );
+    console.error("Webhook Error:", error);
+    return new Response('Internal Error', { status: 500 });
   }
+}
+
+// 3. The Function that sends the reply back to the specific comment
+async function sendCommentReply(commentId: string, text: string) {
+  const token = process.env.INSTAGRAM_ACCESS_TOKEN;
+  // Notice this URL is different from the DM one! It targets the specific comment ID.
+  const url = `https://graph.facebook.com/v20.0/${commentId}/replies`;
+
+  await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      message: text,
+    }),
+  });
 }
